@@ -3,7 +3,7 @@
 __all__ = [
     "tokenize_string", "tokenize_stream", "tokenize_file", "detokenize",
     "parse_block", "flatten_block", "strip_ws", "TokenError", "SUBEXPR",
-    "flatten_stmt", "partition", "rpartition",
+    "flatten_stmt", "partition", "rpartition", "parse_declarations",
 ]
 
 from StringIO import StringIO
@@ -52,7 +52,7 @@ def tokenize_stream(file):
         lno, encoding, bom = 1, None, False
         for line in f:
             if isinstance(line, unicode) or not ENCODING_LINE(line):
-                yield line  
+                yield line
                 break
             if lno==1 and line.startswith(BOM):
                 bom = True
@@ -179,7 +179,7 @@ def flatten_stmt(statement):
                 yield tok
         else:
             yield tok
-                
+
 def strip_ws(tokens):
     """Yield non-whitespace tokens from `tokens`"""
     for tok in tokens:
@@ -187,24 +187,42 @@ def strip_ws(tokens):
             yield tok
 
 
+def rpartition(tokens,sep):
+    """Split `tokens` into (`before`, `sep`, `after`) tuple at last `sep`
 
-
-
-
-
-
-
-
-
-
-
-
-
+    This is just like ``partition()``, except that the split is done at the
+    **last** occurrence of `sep` in `tokens` instead of the first, and all
+    three return values are lists, rather than two lists and an iterator.
+    (Note that this means repeated right-partitioning is an O(N^2)
+    operation, so you should try to use ``partition()`` if you need to keep
+    repartitioning the `before` value.)
+    """
+    b,s,a = partition(list(tokens)[::-1], sep)
+    b.reverse()
+    return list(a)[::-1],s,b
 
 
 
 def partition(tokens, sep):
-    """Split `tokens` into (`before`, `sep`, `after`) tuple at first `sep`"""
+    """Split `tokens` into (`before`, `sep`, `after`) tuple at first `sep`
+
+    Returns a 3-tuple (`before`, `sep`, `after`), such that `before` is a list
+    of the tokens occurring before the first occurence of `sep` in `tokens`,
+    and `after` is an **iterator** that will yield the portion of `tokens` that
+    is after the separator.  (This means that you can keep partitioning the
+    "after" portion without incurring an O(N^2) performance penalty for copying
+    the same list items over and over.)
+
+    If the separator is found, the returned `sep` is a 1-element list
+    containing the actual token that matched `sep`.  If the separator is not
+    found, the returned `sep` is an empty list, and `before` will contain all
+    of `tokens`.
+
+    `sep` can be a string, in which case the token value must exactly equal
+    that string, or else it can be one of the ``tokenize`` module constants
+    like ``tokenize.OP`` or ``tokenize.NAME``, in which case it will match any
+    token of that type.
+    """
     before = []
     after = iter(tokens)
     idx = int(not isinstance(sep,int))   # int matches tok[0], str -> tok[1]
@@ -215,11 +233,6 @@ def partition(tokens, sep):
     else:
         return before,[],after
 
-def rpartition(tokens,sep):
-    """Split `tokens` into (`before`, `sep`, `after`) tuple at last `sep`"""
-    b,s,a = partition(list(tokens)[::-1], sep)
-    b.reverse()
-    return list(a)[::-1],s,b
 
 
 
@@ -231,18 +244,46 @@ def rpartition(tokens,sep):
 
 
 
+def parse_declarations(block):
+    """Yield (names,expr,context,block) tuples for a block of declarations"""
 
+    for stmt, block in block:
+        stmt = list(strip_ws(stmt))
+        if stmt[-1][1]==':':
+            if not block:
+                raise TokenError(
+                    "Expected indented block following ':'", stmt[-1][3]
+                )
+            stmt.pop()  # strip trailing ':'
+        elif block:
+            raise TokenError(
+                "Expected ':' before indented block", stmt[-1][3]
+            )
+        pos = 2
+        names = []
+        while pos <= len(stmt) and stmt[pos-1][1] == '=':
+            lvalue = stmt[pos-2]
+            if lvalue[0] == NAME:
+                names.append(lvalue[1])
+            elif lvalue[0] == STRING:
+                names.append(eval(lvalue[1]))
+            else:
+                raise TokenError("Expected name or string before '='",
+                    stmt[pos-1][2])
+            pos += 2
 
-
-
-
-
-
-
-
-
-
-
+        expr, sep, context = partition(stmt[pos-2:], "from")
+        if names and not expr:
+            raise TokenError("Expected expression",stmt[pos-3][3])
+        elif not sep:
+            context = None
+        else:
+            context = list(context)
+            if not context and not block:   # trailing 'from' without block
+                raise TokenError(
+                    "Expected context or ':' after 'from'", sep[0][3]
+                )
+        yield names, expr, context, block
 
 def detokenize(tokens, indent=0):
     """Convert `tokens` iterable back to a string."""
