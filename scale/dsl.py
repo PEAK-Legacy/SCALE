@@ -2,17 +2,21 @@
 
 __all__ = [
     "tokenize_string", "tokenize_stream", "tokenize_file", "detokenize",
-    "parse_block", "flatten_block", "strip_ws", "TokenError",
+    "parse_block", "flatten_block", "strip_ws", "TokenError", "SUBEXPR",
+    "flatten_stmt", "partition", "rpartition",
 ]
 
 from StringIO import StringIO
 from tokenize import generate_tokens, NL, NEWLINE, ENDMARKER, INDENT, DEDENT
 from tokenize import COMMENT, NAME, NUMBER, STRING, ERRORTOKEN, OP, TokenError
+from tokenize import tok_name
 import re
 
 WHITESPACE = dict.fromkeys([NL,NEWLINE,ENDMARKER,INDENT,DEDENT,COMMENT])
 OPEN_PARENS = dict.fromkeys('{[(')
 CLOSE_PARENS = {'}':'{', ')':'(', ']':'['}
+SUBEXPR = 9999
+tok_name[SUBEXPR] = "SUBEXPR"
 
 BOM = '\xef\xbb\xbf'
 ENCODING_LINE = re.compile('('+BOM+')|\s*(#.*)?$').match
@@ -32,10 +36,6 @@ def tokenize_file(filename):
     PEP 263 source encoding comments and BOM markers will be recognized.
     """
     return tokenize_stream(open(filename,'rU'))
-
-
-
-
 
 
 
@@ -129,31 +129,57 @@ def parse_block(tokens):
             scope = scope[-1][1]    # fill in block under statement
 
         else:
+            if tok==OP and val in OPEN_PARENS:
+                parens.append(val)
+                scopes.append(stmt)
+                subexpr = []
+                stmt.append((SUBEXPR, subexpr, start, end, line))
+                stmt = subexpr
+
             stmt.append((tok, val, start, end, line))
 
-            if tok==NEWLINE:
+            if tok==OP and val in CLOSE_PARENS:
+                if not parens or parens.pop()<>CLOSE_PARENS[val]:
+                    raise TokenError("Unmatched "+val, start)
+                stmt = scopes.pop()
+
+            elif tok==NEWLINE:
                 scope.append((stmt,[]))
                 stmt = []
 
-            elif tok==OP:
-                if val in OPEN_PARENS:
-                    parens.append(val)
-                elif val in CLOSE_PARENS:
-                    if not parens or parens.pop()<>CLOSE_PARENS[val]:
-                        raise TokenError("Unmatched "+val, start)
-
     assert False, "Token stream didn't have an ENDMARKER"
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def flatten_block(block):
     """Yield the tokens composing `block`"""
     for stmt,subblock in block:
-        for tok in stmt:
+        for tok in flatten_stmt(stmt):
             yield tok
         if subblock:
             for tok in flatten_block(subblock):
                 yield tok
 
+def flatten_stmt(statement):
+    """Yield the tokens composing `statement`"""
+    for tok in statement:
+        if tok[0]==SUBEXPR:
+            for tok in flatten_stmt(tok[1]):
+                yield tok
+        else:
+            yield tok
+                
 def strip_ws(tokens):
     """Yield non-whitespace tokens from `tokens`"""
     for tok in tokens:
@@ -162,12 +188,68 @@ def strip_ws(tokens):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def partition(tokens, sep):
+    """Split `tokens` into (`before`, `sep`, `after`) tuple at first `sep`"""
+    before = []
+    after = iter(tokens)
+    idx = int(not isinstance(sep,int))   # int matches tok[0], str -> tok[1]
+    for tok in after:
+        if tok[idx]==sep:
+            return before,[tok],after
+        before.append(tok)
+    else:
+        return before,[],after
+
+def rpartition(tokens,sep):
+    """Split `tokens` into (`before`, `sep`, `after`) tuple at last `sep`"""
+    b,s,a = partition(list(tokens)[::-1], sep)
+    b.reverse()
+    return list(a)[::-1],s,b
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def detokenize(tokens, indent=0):
     """Convert `tokens` iterable back to a string."""
     out = []; add = out.append
     lr,lc,last = 0,0,''
     baseindent = None
-    for tok, val, (sr,sc), (er,ec), line in tokens:
+    for tok, val, (sr,sc), (er,ec), line in flatten_stmt(tokens):
         # Insert trailing line continuation and blanks for skipped lines
         lr = lr or sr   # first line of input is first line of output
         if sr>lr:
